@@ -1,11 +1,14 @@
 import streamlit as st
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from PIL import Image
 import tempfile
 import hashlib
 import sqlite3
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 
 # Initialize session state
 if 'user' not in st.session_state:
@@ -25,9 +28,17 @@ def load_model():
 
 model = load_model()
 
-def draw_rotated_box(img, box, color, thickness=2):
+def draw_angled_corners(img, box, color, thickness=2, corner_length=20):
     pts = np.array(box).astype(np.int32).reshape((-1, 1, 2))
-    cv2.polylines(img, [pts], True, color, thickness)
+    for i in range(4):
+        pt1 = tuple(pts[i][0])
+        pt2 = tuple(pts[(i+1)%4][0])
+        
+        # Draw first half of the corner
+        cv2.line(img, pt1, (int(pt1[0] + (pt2[0]-pt1[0])*0.2), int(pt1[1] + (pt2[1]-pt1[1])*0.2)), color, thickness)
+        
+        # Draw second half of the corner
+        cv2.line(img, pt2, (int(pt2[0] - (pt2[0]-pt1[0])*0.2), int(pt2[1] - (pt2[1]-pt1[1])*0.2)), color, thickness)
 
 def add_text_with_background(img, text, position, font_scale=0.7, thickness=2, text_color=(255,255,255), bg_color=(0,0,0), bg_alpha=0.5):
     if img is None or text is None or position is None:
@@ -35,8 +46,7 @@ def add_text_with_background(img, text, position, font_scale=0.7, thickness=2, t
         return img
 
     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-    print(f"Debug: text_size = {text_size}")
-
+    
     if text_size is None or len(text_size) < 2 or text_size[0] is None:
         print("Error: Unable to get text size")
         return img
@@ -44,16 +54,11 @@ def add_text_with_background(img, text, position, font_scale=0.7, thickness=2, t
     (text_width, text_height) = text_size[0]
     text_offset_x, text_offset_y = position
 
-    print(f"Debug: text_width = {text_width}, text_height = {text_height}")
-    print(f"Debug: text_offset_x = {text_offset_x}, text_offset_y = {text_offset_y}")
-
     if any(v is None for v in [text_width, text_height, text_offset_x, text_offset_y]):
         print("Error: Invalid text dimensions or position")
         return img
 
     box_coords = ((text_offset_x, text_offset_y), (text_offset_x + text_width + 10, text_offset_y - text_height - 10))
-    
-    print(f"Debug: box_coords = {box_coords}")
 
     # Check if box coordinates are within image boundaries
     if (box_coords[0][0] < 0 or box_coords[0][1] < 0 or 
@@ -89,7 +94,17 @@ def process_parking_lot(results):
                 adjusted_box = box.xyxy[0].cpu().numpy()
                 # Convert to rotated box format (4 corners)
                 x1, y1, x2, y2 = adjusted_box
-                adjusted_box = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]])
+                center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+                width, height = x2 - x1, y2 - y1
+                # Reduce the size of the box
+                width *= 0.8
+                height *= 0.8
+                adjusted_box = np.array([
+                    [center_x - width/2, center_y - height/2],
+                    [center_x + width/2, center_y - height/2],
+                    [center_x + width/2, center_y + height/2],
+                    [center_x - width/2, center_y + height/2]
+                ])
             
             if cls in [0, 3]:  # Empty
                 empty_count += 1
@@ -104,12 +119,12 @@ def draw_boxes_and_counts(image, empty_count, filled_count, adjusted_boxes):
         print("Error: Invalid input image")
         return image
 
-    for box, color in adjusted_boxes:
-        draw_rotated_box(image, box, color, 2)
-
     # Add total counts at the top with transparent background
-    image = add_text_with_background(image, f"Empty: {empty_count}", (10, 30), bg_color=(0, 255, 0))
-    image = add_text_with_background(image, f"Filled: {filled_count}", (200, 30), bg_color=(0, 0, 255))
+    image = add_text_with_background(image, f"Empty: {empty_count} | Filled: {filled_count}", (10, 30), bg_color=(0, 0, 0))
+
+    for box, color in adjusted_boxes:
+        draw_angled_corners(image, box, color, 2)
+
     return image
 
 def process_image(image):
@@ -159,41 +174,6 @@ def process_video(video_file):
             break
     
     cap.release()
-
-st.title('Parking Space Analyzer')
-
-uploaded_file = st.file_uploader("Choose an image or video file", type=["jpg", "jpeg", "png", "mp4"])
-
-if uploaded_file is not None:
-    file_type = uploaded_file.type.split('/')[0]
-    
-    if file_type == 'image':
-        image = Image.open(uploaded_file)
-        st.image(image, caption='Uploaded Image', use_column_width=True)
-        
-        if st.button('Analyze Parking Spaces'):
-            try:
-                result_image, empty_count, filled_count = process_image(np.array(image))
-                st.image(result_image, caption='Analyzed Image', use_column_width=True)
-                st.write(f"Empty spaces: {empty_count}")
-                st.write(f"Filled spaces: {filled_count}")
-            except Exception as e:
-                st.error(f"An error occurred during image processing: {str(e)}")
-    
-    elif file_type == 'video':
-        st.video(uploaded_file)
-        
-        if st.button('Analyze Video'):
-            st.session_state['stop_video'] = False
-            try:
-                process_video(uploaded_file)
-            except Exception as e:
-                st.error(f"An error occurred during video processing: {str(e)}")
-        
-        if st.button('Stop Video'):
-            st.session_state['stop_video'] = True
-
-st.write("Upload an image or video to analyze parking spaces.")
 
 # New functions for user authentication
 def hash_password(password):
@@ -308,4 +288,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
