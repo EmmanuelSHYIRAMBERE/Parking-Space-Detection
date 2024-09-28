@@ -1,5 +1,5 @@
 streamlit==1.24.0           
-torch==2.0.1               
+torch==2.4.0               
 opencv-python==4.8.0.74     
 numpy==1.23.5              
 Pillow==9.2.0               
