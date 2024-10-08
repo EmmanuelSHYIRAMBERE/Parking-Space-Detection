@@ -1,8 +1,51 @@
-streamlit==1.24.0           
-torch==2.4.0               
-opencv-python==4.8.0.74     
-numpy==1.23.5              
-Pillow==9.2.0               
-matplotlib==3.7.1          
-scikit-learn==1.3.0       
-ultralytics== 8.2.98
+# Core Web Framework
+streamlit
+fastapi
+uvicorn
+
+# Machine Learning & Computer Vision
+ultralytics
+torch
+torchvision
+opencv-python-headless
+numpy
+Pillow
+
+# Vector Database & Embeddings
+qdrant-client
+sentence-transformers
+langchain
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-qdrant
+langchain-ollama
+
+# Data Processing & Analytics
+pandas
+plotly
+scikit-learn
+scipy
+
+# Database
+sqlalchemy
+aiosqlite
+python-multipart
+
+# Security
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+
+# Monitoring & Logging
+prometheus-client
+python-logging-loki
+
+# Development & Testing
+onnx
+pytest
+black
+flake8
+mypy
+
+unstructured[pdf]
