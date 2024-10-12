@@ -3,6 +3,7 @@
 import time
 import base64
 import os
+import io
 import pandas as pd
 import streamlit as st
 from streamlit import session_state
@@ -36,13 +37,13 @@ def setup_database():
     """Initialize database connection and create necessary tables."""
     conn = sqlite3.connect('integrated_system.db', check_same_thread=False)
     c = conn.cursor()
-    
+
     # Create users table
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (username TEXT PRIMARY KEY, 
                   password TEXT,
                   created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    
+
     # Create comprehensive parking analytics table
     c.execute('''CREATE TABLE IF NOT EXISTS parking_analytics
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +55,7 @@ def setup_database():
                   peak_hour TEXT,
                   image_path TEXT,
                   notes TEXT)''')
-    
+
     # Create daily summary table for faster querying
     c.execute('''CREATE TABLE IF NOT EXISTS daily_summaries
                  (date DATE PRIMARY KEY,
@@ -64,7 +65,7 @@ def setup_database():
                   total_revenue REAL,
                   peak_hours TEXT,
                   total_vehicles INTEGER)''')
-    
+
     # Create document processing table
     c.execute('''CREATE TABLE IF NOT EXISTS document_processing
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,19 +73,28 @@ def setup_database():
                   processing_date DATETIME,
                   status TEXT,
                   error_message TEXT)''')
-    
-    conn.commit()
+
+    migrate_database(c, conn)
     return conn, c
 
-def migrate_database():
+
+def migrate_database(c, conn):
     """Perform necessary database migrations."""
-    conn = sqlite3.connect('integrated_system.db', check_same_thread=False)
-    c = conn.cursor()
-    
+
+    # Check if email column exists
+    c.execute("PRAGMA table_info(users)")
+    columns = [column[1] for column in c.fetchall()]
+
+    if 'email' not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+
+    if 'profile_pic' not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN profile_pic BLOB")
+
     # Check if columns exist in parking_analytics
     c.execute("PRAGMA table_info(parking_analytics)")
     columns = [column[1] for column in c.fetchall()]
-    
+
     columns_to_add = {
         'efficiency': 'REAL',
         'revenue': 'REAL',
@@ -92,13 +102,13 @@ def migrate_database():
         'image_path': 'TEXT',
         'notes': 'TEXT'
     }
-    
+
     for column, data_type in columns_to_add.items():
         if column not in columns:
             c.execute(f"ALTER TABLE parking_analytics ADD COLUMN {column} {data_type}")
             conn.commit()
             print(f"Added {column} column to parking_analytics table")
-    
+
     # Ensure document_processing table exists
     c.execute('''CREATE TABLE IF NOT EXISTS document_processing
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,8 +118,8 @@ def migrate_database():
                   error_message TEXT)''')
     conn.commit()
     print("Ensured document_processing table exists")
-    
-    conn.close()
+
+    return conn, c
 
 # Load the YOLO model for parking detection
 @st.cache_resource
@@ -122,23 +132,103 @@ def hash_password(password):
     """Create a secure hash of the password."""
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-def check_user(username, password):
-    """Verify user credentials."""
-    c = st.session_state.cursor
-    c.execute('SELECT * FROM users WHERE username=? AND password=?', 
-              (username, hash_password(password)))
-    return c.fetchone() is not None
-
-def create_user(username, password):
-    """Create a new user account."""
+def create_user(username, password, email):
     try:
         c = st.session_state.cursor
-        c.execute('INSERT INTO users (username, password) VALUES (?, ?)',
-                 (username, hash_password(password)))
+        c.execute('INSERT INTO users (username, password, email) VALUES (?, ?, ?)',
+                 (username, hash_password(password), email))
         st.session_state.conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False
+
+def check_user(username, password):
+    c = st.session_state.cursor
+    c.execute('SELECT username, email, profile_pic FROM users WHERE username=? AND password=?',
+              (username, hash_password(password)))
+    user = c.fetchone()
+    if user:
+        st.session_state.user = {
+            'username': user[0],
+            'email': user[1],
+            'profile_pic': user[2]
+        }
+        return True
+    return False
+
+def update_password(username, new_password):
+    c = st.session_state.cursor
+    c.execute('UPDATE users SET password=? WHERE username=?',
+              (hash_password(new_password), username))
+    st.session_state.conn.commit()
+
+def update_profile_pic(username, profile_pic):
+    c = st.session_state.cursor
+    c.execute('UPDATE users SET profile_pic=? WHERE username=?',
+              (profile_pic, username))
+    st.session_state.conn.commit()
+
+def get_profile_pic(username):
+    c = st.session_state.cursor
+    c.execute('SELECT profile_pic FROM users WHERE username=?', (username,))
+    result = c.fetchone()
+    return result[0] if result else None
+
+
+# User profile management
+def render_user_profile():
+    st.title("User Profile")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Profile Information")
+        st.write(f"Username: {st.session_state.user['username']}")
+        st.write(f"Email: {st.session_state.user['email']}")
+
+        new_email = st.text_input("New Email")
+        if st.button("Update Email"):
+            c = st.session_state.cursor
+            c.execute('UPDATE users SET email=? WHERE username=?',
+                      (new_email, st.session_state.user['username']))
+            st.session_state.conn.commit()
+            st.session_state.user['email'] = new_email
+            st.success("Email updated successfully!")
+
+        st.subheader("Change Password")
+        current_password = st.text_input("Current Password", type="password")
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+
+        if st.button("Change Password"):
+            if check_user(st.session_state.user['username'], current_password):
+                if new_password == confirm_password:
+                    update_password(st.session_state.user['username'], new_password)
+                    st.success("Password changed successfully!")
+                else:
+                    st.error("New passwords do not match.")
+            else:
+                st.error("Current password is incorrect.")
+
+    with col2:
+        st.subheader("Profile Picture")
+        profile_pic = get_profile_pic(st.session_state.user['username'])
+        if profile_pic:
+            st.image(profile_pic, width=200)
+        else:
+            st.info("No profile picture uploaded yet.")
+
+        uploaded_file = st.file_uploader("Choose a profile picture", type=["jpg", "png", "jpeg"])
+        if uploaded_file is not None:
+            image = Image.open(uploaded_file)
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+
+            update_profile_pic(st.session_state.user['username'], img_byte_arr)
+            st.session_state.user['profile_pic'] = img_byte_arr
+            st.success("Profile picture updated successfully!")
+            st.rerun()
 
 # Parking Analysis Functions
 def process_parking_image(image, notes=""):
@@ -430,9 +520,10 @@ def get_todays_data():
 def main():
     """Main application function."""
 
-    # Run database migration
-    migrate_database()
-    
+    # Initialize database connection if not already done
+    if 'conn' not in st.session_state or 'cursor' not in st.session_state:
+        st.session_state.conn, st.session_state.cursor = setup_database()
+
     # Initialize database connection if not already done
     if st.session_state.conn is None or st.session_state.cursor is None:
         st.session_state.conn, st.session_state.cursor = setup_database()
@@ -449,37 +540,37 @@ def main():
         st.image("logo.png", use_column_width=True)
         st.markdown("### 🚗 Smart Parking Assistant")
         st.markdown("---")
-        
-        # Login/Register section if user not authenticated
+
         if st.session_state.user is None:
             login_tab, register_tab = st.tabs(["Login", "Register"])
-            
+
             with login_tab:
                 login_user = st.text_input("Username", key="login_user")
                 login_pass = st.text_input("Password", type="password", key="login_pass")
                 if st.button("Login"):
                     if check_user(login_user, login_pass):
-                        st.session_state.user = login_user
                         st.success("Successfully logged in!")
                         st.rerun()
                     else:
                         st.error("Invalid credentials")
-            
+
             with register_tab:
                 reg_user = st.text_input("Username", key="reg_user")
+                reg_email = st.text_input("Email", key="reg_email")
                 reg_pass = st.text_input("Password", type="password", key="reg_pass")
                 if st.button("Register"):
-                    if create_user(reg_user, reg_pass):
+                    if create_user(reg_user, reg_pass, reg_email):
                         st.success("Registration successful! Please login.")
                     else:
                         st.error("Username already exists")
-        
-        # Navigation menu for authenticated users
+
         else:
-            st.write(f"Welcome, {st.session_state.user}!")
-            menu = ["🏠 Home", "🚗 Parking Analysis", "🤖 Parking Assistant", "📊 Data Analysis", "📧 Contact"]
+            st.write(f"Welcome, {st.session_state.user['username']}!")
+            if st.session_state.user['profile_pic']:
+                st.image(st.session_state.user['profile_pic'], width=100)
+            menu = ["🏠 Home", "🚗 Parking Analysis", "🤖 Parking Assistant", "📊 Data Analysis", "👤 User Profile", "📧 Contact"]
             choice = st.selectbox("Navigate", menu)
-            
+
             if st.button("Logout"):
                 st.session_state.user = None
                 st.rerun()
@@ -590,6 +681,9 @@ def main():
 
         elif choice == "📊 Data Analysis":
             render_data_analysis()
+
+        elif choice == "👤 User Profile":
+            render_user_profile()
 
         elif choice == "📧 Contact":
             st.title("📬 Contact Us")
