@@ -26,6 +26,9 @@ pandas
 plotly
 scikit-learn
 scipy
+streamlit-js-eval
+opencv-python
+requests
 
 # Database
 sqlalchemy
